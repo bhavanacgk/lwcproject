@@ -1,0 +1,9 @@
+handleAccordionToggle(event) {
+            // Close the open accordion section if needed
+            const openSections = event.detail.openSections;
+            const accordionSections = this.template.querySelectorAll('lightning-accordion-section');
+            accordionSections.forEach(section => {
+                if (section.name !== event.detail.name && openSections.includes(section.name)) {
+                    section.dispatchEvent(new CustomEvent('click'));
+                }
+            });
