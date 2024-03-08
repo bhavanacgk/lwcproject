@@ -1,0 +1,42 @@
+<template>
+	<p class="slds-text-heading_small">{activeSectionMessage}</p>
+	<lightning-record-edit-form object-api-name="Account" record-id={recordId} onsuccess={handleSuccess} onsubmit ={handleSubmit}>
+	<lightning-accordion class="example-accordion">
+		<lightning-accordion-section name="A" label="Profile">
+			
+					<div class="slds-m-around_medium">
+						<lightning-input-field field-name="Name"></lightning-input-field>
+						<lightning-input-field field-name="OwnerId" ></lightning-input-field>
+					
+					</div>
+					
+		</lightning-accordion-section>
+		<lightning-accordion-section name="B" label="DCIO Strategic Advisory">
+			<div class="slds-m-around_medium">
+				<lightning-input-field field-name="Industry"></lightning-input-field>
+				<lightning-input-field field-name="Type"></lightning-input-field>
+				<lightning-input-field field-name="Rating"></lightning-input-field>
+			</div>
+		</lightning-accordion-section>
+
+		<lightning-accordion-section name="C" label="Offshore Availability">
+			<div class="slds-m-around_medium">
+				<lightning-input-field field-name="Phone"></lightning-input-field>
+			</div>
+		</lightning-accordion-section>
+		<lightning-accordion-section name="C" label="Fidelity Alternatives & Private Placement">
+			<div class="slds-m-around_medium">
+				<lightning-input-field field-name="BillingAddress"></lightning-input-field>
+			</div>
+		</lightning-accordion-section>
+		<lightning-accordion-section name="D" label="Wealth Advisor">
+			<div class="slds-m-around_medium">
+				<lightning-input-field field-name="AccountSource"></lightning-input-field>
+			</div>
+		</lightning-accordion-section>
+	</lightning-accordion>
+	<div class="slds-m-top_medium">
+		<lightning-button variant="brand" type="submit" name="save" label="Updated Account"></lightning-button>
+	</div>
+</lightning-record-edit-form>
+</template>
