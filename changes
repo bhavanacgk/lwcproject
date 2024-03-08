@@ -7,3 +7,6 @@ handleAccordionToggle(event) {
                     section.dispatchEvent(new CustomEvent('click'));
                 }
             });
+ <div class="slds-m-around_medium">
+                    <div class="slds-grid slds-wrap">
+                        <div class="slds-col slds-size_1-of-2">
