@@ -1,0 +1,745 @@
+-- Modified on 29-Jan-2008
+whenever oserror exit SQL.OSCODE
+whenever sqlerror exit SQL.SQLCODE
+set timing on
+set verify off
+set serveroutput on size 1000000
+spool &4;
+
+-- input argument staged_coverage_model_rule staged_cm_client_data_group sales_dstbn_structure table names
+
+DECLARE
+
+    too_many_sds_id 		exception;
+    cur_date			varchar2(25);
+    l_seq_num 			number := 0;
+    l_seq_num_used 		varchar2(10) := '00'||l_seq_num;
+
+
+    grp_nm			&2..group_nm%TYPE;
+    sds_id			&2..sales_dstbn_structure_id%TYPE;
+    				    
+    salesDstbnStructureIdValue 	number := 0;
+    sequenceNumber 		number := 0;
+    NoOfCovModRule 		number := 0;
+
+    count1			number(10) := 0;
+    count2			number(10) := 0;
+    count3			number(10) := 0;
+    
+    -- variables to hold various SQL statements
+    sql_sds_stmt		varchar2(2000);
+    sql_mkt_stmt 		varchar2(2000);
+    sql_org_stmt 		varchar2(2000);
+    sql_brnch_stmt 		varchar2(2000);
+    sql_ip_stmt 		varchar2(2000);
+    sql_plan_stmt 		varchar2(2000);
+    sql_terr_by_stat_cd_stmt 	varchar2(2000);
+    sql_proc_prof_cd_stmt 	varchar2(2000);
+    sql_funnel_ty_cd_stmt 	varchar2(2000);
+    sql_CovNm_stmt 		varchar2(2000);
+
+    -- variable to hold data to be inserted
+    mkt_cd 			varchar2(10) 	:= NULL;
+    mktValue 			&1..rule_tx%TYPE:= NULL;
+    org_id 			varchar2(10) 	:= NULL;
+    orgValue 			&1..rule_tx%TYPE:= NULL;
+    brnch_id 			varchar2(10) 	:= NULL;
+    brnchValue 			&1..rule_tx%TYPE:= NULL;
+    ip_id 			varchar2(10) 	:= NULL;
+    ipValue 			&1..rule_tx%TYPE:= NULL;  
+    plan_id 			varchar2(10) 	:= NULL;
+    planValue 			&1..rule_tx%TYPE:= NULL;
+    terr_by_stat_cd		varchar2(10) 	:= NULL;
+    terrbystatValue		&1..rule_tx%TYPE:= NULL;
+    proc_profile_cd 		varchar2(10) 	:= NULL;
+    procprofileValue		&1..rule_tx%TYPE:= NULL;
+    funnel_type_cd		varchar2(10) 	:= NULL;
+    funneltypeValue		&1..rule_tx%TYPE:= NULL;
+    CovModRul_NM 		&1..coverage_model_nm%TYPE;
+
+    type selectSdsCur 		IS REF CURSOR;
+    selectSdsCurRec 		selectSdsCur; 
+    type selectMktCur 		IS REF CURSOR;
+    selectMktCurRec 		selectMktCur;
+    type selectOrgCur 		IS REF CURSOR;
+    selectOrgCurRec 		selectOrgCur;
+    type selectBrnchCur 	IS REF CURSOR;
+    selectBrnchCurRec 		selectBrnchCur;
+    type selectPlanCur 		IS REF CURSOR;
+    selectPlanCurRec 		selectPlanCur;
+    type selectIPCur 		IS REF CURSOR;
+    selectIPCurRec 		selectIPCur;
+    type selectCovModNm 	IS REF CURSOR;
+    selectCovModNmRec 		selectCovModNm;
+    type selectTerrStCdCur 	IS REF CURSOR;
+    selectTerrStCdCurRec 	selectTerrStCdCur;
+    type selectProcProfCdCur 	IS REF CURSOR;
+    selectProcProfCdCurRec 	selectProcProfCdCur;
+    type selectFunTyCdCur 	IS REF CURSOR;
+    selectFunTyCdCurRec 	selectFunTyCdCur;
+
+    cursor selectRptGrpNmCur is
+    	select distinct group_nm from &2;
+
+
+BEGIN
+        
+    select to_char(sysdate, 'DD-MON-RR HH:MI:SS AM') into cur_date from dual;
+    dbms_output.put_line('Start of roll up for client data at :  '|| to_char(sysdate,'DD-MON-RR HH24.MI.SS'));
+    
+    -- check if there are any group_nms with invalid sds_id or no sds_id
+    sql_sds_stmt:= 'select distinct group_nm, sales_dstbn_structure_id from &2
+    	where sales_dstbn_structure_id not in (select sales_dstbn_structure_id from &3) 
+    	or sales_dstbn_structure_id is null';
+    
+    dbms_output.put_line('=================================================================');
+    dbms_output.put_line('     ====== * * * * *    REJECTED RECORDS    * * * * * =====     ');
+    dbms_output.put_line('=================================================================');
+    open selectSdsCurRec for sql_sds_stmt;
+    loop
+    fetch selectSdsCurRec into grp_nm, sds_id;
+    	exit when selectSdsCurRec%NOTFOUND;
+    	
+    	dbms_output.put_line('The data for group name ' || grp_nm || ' was not processed because the ');
+    	
+    	if sds_id is null then
+    		dbms_output.put_line('sales_dstbn_structure_id for this group name is null');
+    	else
+    		dbms_output.put_line('sales_dstbn_structure_id ' || sds_id || ' is not present in &3 table');
+    	end if;    
+    	
+    	delete from &1 where group_nm = grp_nm;
+    	delete from &2 where group_nm = grp_nm;
+    end loop;
+    close selectSdsCurRec;
+    dbms_output.put_line('=================================================================');
+    
+    select count(*) into count1 from &1;
+    
+    -- fetch distinct group names from staged_cm_client_data_group
+    for selectRptGrpNmRec in selectRptGrpNmCur	
+
+    loop
+	 mktValue 	 := NULL;
+	 orgValue 	 := NULL;
+	 brnchValue 	 := NULL;
+	 planValue 	 := NULL;
+	 ipValue	 := NULL;
+	 terrbystatValue := NULL;
+	 procprofileValue:= NULL;
+	 funneltypeValue := NULL;
+
+
+	 l_seq_num 	:= 0;
+
+	 /* Get sales_dstbn_structure_id for the current group name. If more than 
+	    one row is returned raise an error
+	 */
+	 select distinct sales_dstbn_structure_id into salesDstbnStructureIdValue 
+	 from &2
+	 where group_nm = selectRptGrpNmRec.group_nm;
+
+
+	 ----------MKT CODE cursor starts---------
+
+	 -- fetch the market codes for the current group name
+	 sql_mkt_stmt := 'select distinct mkt_cd from &2 
+			  where group_nm = :1';
+
+	 -- list them as comma seperated values
+	 open selectMktCurRec for sql_mkt_stmt using selectRptGrpNmRec.group_nm;								-- :1
+	    loop
+		fetch selectMktCurRec into mkt_cd;
+		exit when selectMktCurRec%notfound;
+		mktValue := mktValue || mkt_cd || ',' ;
+	    end loop; -- selectMktCurRec
+
+	 close selectMktCurRec;
+
+	 -- remove comma from start of string of market codes
+	 mktValue := rtrim(ltrim(mktValue,','),',');
+
+	 ----------MKT CODE cursor ends---------
+
+
+	 ----------ORG ID cursor starts---------
+
+	 sql_org_stmt := 'select distinct org_id from &2 
+			  where group_nm = :1';
+
+	 open selectOrgCurRec for sql_org_stmt using selectRptGrpNmRec.group_nm;
+	    loop
+		fetch selectOrgCurRec into org_id;
+		exit when selectOrgCurRec%notfound;
+		orgValue := orgValue || org_id || ',' ;
+	    end loop; -- selectOrgCurRec	
+	 close selectOrgCurRec;
+	 
+	 orgValue := rtrim(ltrim(orgValue,','),',');
+
+	 ----------ORG ID cursor ends---------
+
+
+	 ----------BRANCH ID cursor starts---------
+
+	 sql_brnch_stmt := 'select distinct brnch_id from &2 
+	 		    where group_nm = :1';
+
+	 open selectBrnchCurRec for sql_brnch_stmt using selectRptGrpNmRec.group_nm;
+	    loop
+		fetch selectBrnchCurRec into brnch_id;			
+		exit when selectBrnchCurRec%notfound;			
+		brnchValue := brnchValue || brnch_id || ',' ;			
+	    end loop; -- selectBrnchCurRec
+	 close selectBrnchCurRec;		
+	    
+	 brnchValue := rtrim(ltrim(brnchValue,','),',');
+
+	 ----------BRANCH ID cursor ends---------		
+
+	 ----------IP ID cursor starts---------
+
+	 sql_ip_stmt := 'select distinct ip_id from &2 where group_nm = :1';
+
+	 open selectIPCurRec for sql_ip_stmt using selectRptGrpNmRec.group_nm;
+	    loop
+		fetch selectIPCurRec into ip_id;
+		exit when selectIPCurRec%notfound;
+		ipValue := ipValue || ip_id || ',' ;
+	    end loop; -- selectPlanCurRec
+	 close selectIPCurRec;
+	 
+	 ipValue := rtrim(ltrim(ipValue,','),',');
+
+	 ----------IP ID cursor ends---------
+
+
+	 ----------PLAN ID cursor starts---------
+
+	 sql_plan_stmt := 'select distinct plan_id from &2 where group_nm = :1';
+
+	 open selectPlanCurRec for sql_plan_stmt using selectRptGrpNmRec.group_nm;
+	    loop
+		fetch selectPlanCurRec into plan_id;
+		exit when selectPlanCurRec%notfound;
+		planValue := planValue || plan_id || ',' ;
+	    end loop; -- selectPlanCurRec
+	 close selectPlanCurRec;
+	 
+	 planValue := rtrim(ltrim(planValue,','),',');
+
+	 ----------PLAN ID cursor ends---------
+
+
+	 ----------TERRITORY_BY_STATE_CD cursor starts---------
+
+	 sql_terr_by_stat_cd_stmt := 'select distinct territory_by_state_cd from &2 where group_nm = :1';
+
+	 open selectTerrStCdCurRec for sql_terr_by_stat_cd_stmt using selectRptGrpNmRec.group_nm;
+	    loop
+		fetch selectTerrStCdCurRec into terr_by_stat_cd;
+		exit when selectTerrStCdCurRec%notfound;
+		terrbystatValue := terrbystatValue || terr_by_stat_cd || ',' ;
+	    end loop; -- selectTerrStCdCurRec
+	 close selectTerrStCdCurRec;
+	 
+	 terrbystatValue := rtrim(ltrim(terrbystatValue,','),',');
+
+	 ----------TERRITORY_BY_STATE_CD cursor ends---------
+
+ 	 ----------PROC_PROFILE_CD cursor starts---------
+
+	 sql_proc_prof_cd_stmt := 'select distinct proc_profile_cd from &2 where group_nm = :1';
+
+	 open selectProcProfCdCurRec for sql_proc_prof_cd_stmt using selectRptGrpNmRec.group_nm;
+	    loop
+		fetch selectProcProfCdCurRec into proc_profile_cd;
+		exit when selectProcProfCdCurRec%notfound;
+		procprofileValue := procprofileValue || proc_profile_cd || ',' ;
+	    end loop; -- selectProcProfCdCurRec
+	 close selectProcProfCdCurRec;
+	 
+	 procprofileValue := rtrim(ltrim(procprofileValue,','),',');
+
+	 ----------PROC_PROFILE_CD cursor ends---------
+
+	 ----------FUNNEL_TYPE_CD cursor starts---------
+
+	 sql_funnel_ty_cd_stmt := 'select distinct funnel_type_cd from &2 where group_nm = :1';
+
+	 open selectFunTyCdCurRec for sql_funnel_ty_cd_stmt using selectRptGrpNmRec.group_nm;
+	    loop
+		fetch selectFunTyCdCurRec into funnel_type_cd;
+		exit when selectFunTyCdCurRec%notfound;
+		funneltypeValue := funneltypeValue || funnel_type_cd || ',' ;
+	    end loop; -- selectFunTyCdCurRec
+	 close selectFunTyCdCurRec;
+	 
+	 funneltypeValue := rtrim(ltrim(funneltypeValue,','),',');
+
+	 ----------FUNNEL_TYPE_CD cursor ends---------
+
+
+	 -- fetch all coverage_model_nm for the current group name
+	 sql_CovNm_stmt := 'select distinct coverage_model_nm from &1 
+	 		    where ltrim(group_nm) = ltrim(:1)';
+
+
+	 /* For each coverage_model_nm insert values for market codes, org ids, 
+	    branch ids and plan ids.		
+	 */		
+
+	 open selectCovModNmRec for sql_CovNm_stmt using selectRptGrpNmRec.group_nm;
+	    loop
+		fetch selectCovModNmRec into CovModRul_NM;
+		exit when selectCovModNmRec%notfound;
+
+	      	if  mktValue IS NOT NULL then			  
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			CovModRul_NM,
+			'MKT',
+			'IN',
+			mktValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+
+		if  orgValue IS NOT NULL then			  
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			CovModRul_NM,
+			'ORG',
+			'IN',
+			orgValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+
+		if  brnchValue IS NOT NULL then			  
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			CovModRul_NM,
+			'BCH',
+			'IN',
+			brnchValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+
+		if  ipValue IS NOT NULL then			
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			CovModRul_NM,
+			'IP',
+			'IN',
+			ipValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;		  
+		
+
+		if  planValue IS NOT NULL then			
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			CovModRul_NM,
+			'PLAN',
+			'IN',
+			planValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+
+
+		if  terrbystatValue IS NOT NULL then			
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			CovModRul_NM,
+			'STER',
+			'IN',
+			terrbystatValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+
+		if  procprofileValue IS NOT NULL then			
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			CovModRul_NM,
+			'IPRC',
+			'IN',
+			procprofileValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+
+		if  funneltypeValue IS NOT NULL then			
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			CovModRul_NM,
+			'IFNL',
+			'!=',
+			funneltypeValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+	    end loop;
+	    if selectCovModNmRec%ROWCOUNT = 0 then		
+		if  mktValue IS NOT NULL then			  
+		      l_seq_num := l_seq_num + 1;
+		      if l_seq_num < 10 then
+			  l_seq_num_used := '00' || l_seq_num;
+		      elsif l_seq_num < 100 then
+			  l_seq_num_used := '0' || l_seq_num;
+		      else 
+			  l_seq_num_used := l_seq_num;
+		      end if;
+
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			selectRptGrpNmRec.group_nm || ' ' || cur_date || ' ' || l_seq_num_used,
+			'MKT',
+			'IN',
+			mktValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+
+		if  orgValue IS NOT NULL then			  
+		      l_seq_num := l_seq_num + 1;
+		      if l_seq_num < 10 then
+			  l_seq_num_used := '00' || l_seq_num;
+		      elsif l_seq_num < 100 then
+			  l_seq_num_used := '0' || l_seq_num;
+		      else 
+			  l_seq_num_used := l_seq_num;
+		      end if;		      
+
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			selectRptGrpNmRec.group_nm || ' ' || cur_date || ' ' || l_seq_num_used,
+			'ORG',
+			'IN',
+			orgValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+
+		if  brnchValue IS NOT NULL then			  
+		      l_seq_num := l_seq_num + 1;
+		      if l_seq_num < 10 then
+			  l_seq_num_used := '00' || l_seq_num;
+		      elsif l_seq_num < 100 then
+			  l_seq_num_used := '0' || l_seq_num;
+		      else 
+			  l_seq_num_used := l_seq_num;
+		      end if;
+
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			selectRptGrpNmRec.group_nm || ' ' || cur_date || ' ' || l_seq_num_used,
+			'BCH',
+			'IN',
+			brnchValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+
+		if  ipValue IS NOT NULL then	
+		      l_seq_num := l_seq_num + 1;
+		      if l_seq_num < 10 then
+			  l_seq_num_used := '00' || l_seq_num;
+		      elsif l_seq_num < 100 then
+			  l_seq_num_used := '0' || l_seq_num;
+		      else 
+			  l_seq_num_used := l_seq_num;
+		      end if;
+
+		
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			selectRptGrpNmRec.group_nm || ' ' || cur_date || ' ' || l_seq_num_used,
+			'IP',
+			'IN',
+			ipValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;	
+
+		if  planValue IS NOT NULL then			
+		      l_seq_num := l_seq_num + 1;
+		      if l_seq_num < 10 then
+			  l_seq_num_used := '00' || l_seq_num;
+		      elsif l_seq_num < 100 then
+			  l_seq_num_used := '0' || l_seq_num;
+		      else 
+			  l_seq_num_used := l_seq_num;
+		      end if;
+
+
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			selectRptGrpNmRec.group_nm || ' ' || cur_date || ' ' || l_seq_num_used,
+			'PLAN',
+			'IN',
+			planValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;	
+		
+		if  terrbystatValue IS NOT NULL then			
+		      l_seq_num := l_seq_num + 1;
+		      if l_seq_num < 10 then
+			  l_seq_num_used := '00' || l_seq_num;
+		      elsif l_seq_num < 100 then
+			  l_seq_num_used := '0' || l_seq_num;
+		      else 
+			  l_seq_num_used := l_seq_num;
+		      end if;
+
+
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			selectRptGrpNmRec.group_nm || ' ' || cur_date || ' ' || l_seq_num_used,
+			'STER',
+			'IN',
+			terrbystatValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+
+		if  procprofileValue IS NOT NULL then			
+		      l_seq_num := l_seq_num + 1;
+		      if l_seq_num < 10 then
+			  l_seq_num_used := '00' || l_seq_num;
+		      elsif l_seq_num < 100 then
+			  l_seq_num_used := '0' || l_seq_num;
+		      else 
+			  l_seq_num_used := l_seq_num;
+		      end if;
+
+
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			selectRptGrpNmRec.group_nm || ' ' || cur_date || ' ' || l_seq_num_used,
+			'IPRC',
+			'IN',
+			procprofileValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+
+		if  funneltypeValue IS NOT NULL then			
+		      l_seq_num := l_seq_num + 1;
+		      if l_seq_num < 10 then
+			  l_seq_num_used := '00' || l_seq_num;
+		      elsif l_seq_num < 100 then
+			  l_seq_num_used := '0' || l_seq_num;
+		      else 
+			  l_seq_num_used := l_seq_num;
+		      end if;
+
+
+		      insert into &1
+		      (
+			group_nm,
+			coverage_model_nm,
+			rule_ty_cd,
+			rule_operator_nm,
+			rule_tx,
+			sales_dstbn_structure_id
+		      )
+		      values
+		      (
+			selectRptGrpNmRec.group_nm,
+			selectRptGrpNmRec.group_nm || ' ' || cur_date || ' ' || l_seq_num_used,
+			'IFNL',
+			'!=',
+			funneltypeValue,
+			salesDstbnStructureIdValue
+		      );
+		end if;
+
+	    end if;
+	close selectCovModNmRec;
+
+    end loop; --selectRptGrpNmRec
+    commit;
+    
+select count(*) into count2 from &1;
+count3 := count2 - count1;	
+
+dbms_output.put_line ('Inserted ' || count3 || ' rows in &1');
+
+dbms_output.put_line('Finished roll up for client data at :  '|| to_char(sysdate,'DD-MON-RR HH24.MI.SS'));
+dbms_output.put_line ('stagedCoverageModelRuleForClient SQL executed succesfully');  	
+
+EXCEPTION
+
+when too_many_rows then
+  dbms_output.put_line ('sales_dstbn_structure_id from &2 for a group_nm should return only one value');
+  dbms_output.put_line('Error in roll up for client data occurred at :  '|| to_char(sysdate,'DD-MON-RR HH24.MI.SS'));
+  rollback;
+  raise;
+when others then
+  dbms_output.put_line (sqlerrm);    
+  dbms_output.put_line('Error in roll up for client data occurred at :  '|| to_char(sysdate,'DD-MON-RR HH24.MI.SS'));
+  rollback;
+  raise;
+end;
+/
+
+spool off;
+
+exit
