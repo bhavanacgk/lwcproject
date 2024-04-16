@@ -1,0 +1,851 @@
+whenever oserror exit SQL.OSCODE
+whenever sqlerror exit SQL.SQLCODE
+set verify off
+set timing on
+set serveroutput on size 1000000
+spool &3;
+
+-- input argument staged_coverage_model_rule, staged_cm_zip_data_group
+DECLARE
+
+   cursor c1 is 
+   	select group_nm, count(*) from &2 
+   	group by group_nm;
+   
+   cursor invalidZipCd is
+   	select group_nm, zip_cd from &2 z where not exists 
+   	(select 1 from zip_code zc where zc.zip_cd = z.zip_cd);
+
+   type myCursor is REF cursor;
+   myCurs myCursor;
+  
+   cur_date		varchar2(25);
+   
+   -- variables to store data found by cursors
+   l_group_nm 		&2..group_nm%type;      
+   l_state_cd 		zip_code.state_cd%type;   
+   l_zip3 		zip_code.zip3_no%type;   
+   l_county_nm 		zip_code.county_nm%type;   
+   l_primary_city_nm 	zip_code.primary_city_nm%type;   
+   l_zip_code 		&2..zip_cd%type;
+   l_cov_mod_nm		&1..coverage_model_nm%type;
+
+   -- variables to store the count of rows found by cursors
+   count1 		number;	
+   count2 		number;	
+   count3 		number;	
+   
+   total_count 		number := 0;
+   first_cov_nm_no	number(4) := 0;
+   
+   -- variables to store results to be inserted into the table
+   l_extra_zip_cds 	&1..rule_tx%type := NULL;
+   state_cd_range	&1..rule_tx%type := NULL;
+   zip3_range 		&1..rule_tx%type := NULL;
+   
+   -- variables to store parts of sql codes to be concatenated later
+   state_cd_sql 	varchar2(32766) := NULL;
+   zip3_sql 		varchar2(32766) := NULL;
+   coty_sql		varchar2(32766) := NULL;
+   city_sql		varchar2(32766) := NULL;
+ 
+   l_seq_num 		number := 0;
+   l_seq_num_used 	varchar2(10) := '00'||l_seq_num;   
+   l_sql_stmt 		varchar2(32766);   
+   l_sql_stmt1 		varchar2(32766); 
+   l_coty_sql 		varchar2(32766);   
+   l_city_sql 		varchar2(32766);   
+   l_continue 		varchar(1) := 'Y';
+   
+   TYPE sqlTXT is table of varchar2(20000);
+   v_coty_txt1 sqlTXT;
+   v_coty_txt2 sqlTXT;
+   v_coty_txt3 sqlTXT;
+   v_coty_txt4 sqlTXT;
+   v_coty_txt5 sqlTXT;
+   v_city_txt1 sqlTXT;
+   v_city_txt2 sqlTXT;
+   v_city_txt3 sqlTXT;
+   v_city_txt4 sqlTXT;
+   v_city_txt5 sqlTXT;
+   
+   procedure CntyCityRollup (v_ty varchar2, grp_nm varchar2) IS
+   
+       cov_nm		&1..COVERAGE_MODEL_NM%TYPE := NULL;
+       first_cov_nm	&1..COVERAGE_MODEL_NM%TYPE := NULL;
+       new_cov_nm	&1..COVERAGE_MODEL_NM%TYPE := NULL;       
+       rul_tx		&1..RULE_TX%TYPE := NULL;
+       cnt_cty		number(10) := 0;
+       cnt1		number(10) := 0;
+       temp_rul_tx	varchar2(50) := NULL;
+       next_rul_tx	varchar2(50) := NULL;
+       v_rul_tx		&1..RULE_TX%TYPE := NULL;
+       sql_stmnt	varchar2(2000) := NULL;
+       sql_stmnt1	varchar2(2000) := NULL;
+       flag1		varchar2(1) := 'N';
+   
+       type myCursr is REF cursor;	
+       c1 myCursr;
+       c2 myCursr;
+   
+   begin    
+           
+       sql_stmnt := 'select RULE_TX, count(*) from &1 where 
+       	   RULE_OPERATOR_NM = ''='' and RULE_TY_CD = ''STAT'' and 
+       	   COVERAGE_MODEL_NM in (select COVERAGE_MODEL_NM from &1 where 
+       	   RULE_TY_CD = ''' || v_ty || ''' and group_nm = ''' || grp_nm || ''') 
+       	   group by GROUP_NM, RULE_TX';
+
+       open c1 for sql_stmnt;
+       loop
+       fetch c1 into rul_tx, cnt_cty;
+       	   exit when c1%NOTFOUND;
+       	
+       	   v_rul_tx := NULL;
+       	   flag1 := 'N';
+       	   first_cov_nm := NULL;
+       	   new_cov_nm := NULL;
+       	
+    	   select COVERAGE_MODEL_NM into first_cov_nm 
+    	   from &1 where rownum = 1 and GROUP_NM = grp_nm 
+    	   and RULE_TY_CD = 'STAT' and RULE_TX = rul_tx 
+    	   and COVERAGE_MODEL_NM in (select COVERAGE_MODEL_NM 
+    		from &1 where GROUP_NM = grp_nm 
+    		and RULE_TY_CD = v_ty) order by 1;
+
+       	   sql_stmnt1 := 'select COVERAGE_MODEL_NM, rule_tx, lead(rule_tx,1,NULL) 
+       		over (order by COVERAGE_MODEL_NM) from &1 
+       		where COVERAGE_MODEL_NM in (select COVERAGE_MODEL_NM 
+       		from &1 where RULE_TX = '''|| rul_tx || ''' and 
+       		GROUP_NM = ''' || grp_nm || ''') and RULE_TY_CD = ''' || v_ty || '''';
+       	
+       	   open c2 for sql_stmnt1;
+       	   loop
+       	   fetch c2 into cov_nm, temp_rul_tx, next_rul_tx;
+       	    	exit when c2%NOTFOUND;
+       	    
+       	    	v_rul_tx := v_rul_tx || ',' || temp_rul_tx;
+		new_cov_nm := first_cov_nm;
+       	    	cnt_cty := cnt_cty - 1;
+   
+       	    	if ((length(v_rul_tx) + length(next_rul_tx) + 1) >= 4000) or (cnt_cty = 0) then
+       	    	    v_rul_tx := ltrim(v_rul_tx, ',');
+
+       	    	    if flag1 = 'N' then
+       	    	    	update &1 set rule_tx = v_rul_tx
+       	    	    	where COVERAGE_MODEL_NM = first_cov_nm
+       	    	    	and RULE_TY_CD = v_ty;	
+       	    	    
+       	    	    	flag1 := 'Y';
+       	    	    else
+			l_seq_num := l_seq_num + 1;
+			if l_seq_num < 10 then
+			    l_seq_num_used := '00' || l_seq_num;
+			elsif l_seq_num < 100 then
+			    l_seq_num_used := '0' || l_seq_num;
+			else 
+			    l_seq_num_used := l_seq_num;
+			end if;
+			
+			new_cov_nm := grp_nm || ' '|| cur_date || ' ' || l_seq_num_used;
+
+       	    	    	insert into &1 
+       	    	    	( group_nm
+       	    	    	, coverage_model_nm
+       	    	    	, rule_ty_cd
+       	    	    	, rule_operator_nm
+       	    	    	, rule_tx
+       	    	    	, sales_dstbn_structure_id
+       	    	    	)
+       	    	    	values (grp_nm
+       	    	    		, new_cov_nm
+       	    	    		, v_ty
+       	    	    		, 'IN'
+       	    	    		, v_rul_tx
+       	    	    		, NULL);
+
+       	    	    	insert into &1 
+       	    	    	( group_nm
+       	    	    	, coverage_model_nm
+       	    	    	, rule_ty_cd
+       	    	    	, rule_operator_nm
+       	    	    	, rule_tx
+       	    	    	, sales_dstbn_structure_id
+       	    	    	)
+       	    	    	values (grp_nm
+       	    	    		, new_cov_nm
+       	    	    		, 'STAT'
+       	    	    		, '='
+       	    	    		, rul_tx
+       	    	    		, NULL);
+       	    	    end if;
+       	    	
+       	    	    v_rul_tx := NULL;
+       	    	end if;
+       	   end loop;
+       	   close c2;
+
+       	   delete from &1 where coverage_model_nm in 
+       	   (select COVERAGE_MODEL_NM from &1 where GROUP_NM = grp_nm 
+       	   and RULE_TY_CD = 'STAT' and RULE_TX = rul_tx 
+       	   and COVERAGE_MODEL_NM in (select COVERAGE_MODEL_NM from &1 
+       		where GROUP_NM = grp_nm and RULE_TY_CD = v_ty))
+       		and COVERAGE_MODEL_NM <> first_cov_nm
+       		and COVERAGE_MODEL_NM <> new_cov_nm;
+
+       end loop;
+       close c1;
+     
+   exception
+      when others then   	
+      	rollback;
+       	dbms_output.put_line ('CntyCityRollup procedure Exception' );
+           raise;	
+   end CntyCityRollup;
+
+
+
+BEGIN 
+
+dbms_output.put_line('Start of roll up for zip data at :  '|| to_char(sysdate,'DD-MON-RR HH24.MI.SS'));
+
+delete from &1;
+
+   dbms_output.put_line('=================================================================');
+   dbms_output.put_line('=========== * * * * *    REJECTED RECORDS    * * * * * ==========');
+   dbms_output.put_line('=================================================================');
+   dbms_output.put_line('The following records were rejected because the zip codes were');
+   dbms_output.put_line('not present in the zip_code table');
+   
+   open invalidZipCd;
+   loop
+   fetch invalidZipCd into l_group_nm, l_zip_code;
+   	exit when invalidZipCd%NOTFOUND;
+
+   	dbms_output.put_line(l_group_nm || ',' || l_zip_code);
+   	delete from &2 where group_nm = l_group_nm and zip_cd = l_zip_code;
+   	
+   end loop;
+   close invalidZipCd;
+   
+   dbms_output.put_line('=================================================================');
+   
+----------Main cursor of ZIP GROUP NAME start----------   
+
+   select to_char(sysdate, 'DD-MON-RR HH:MI:SS AM') into cur_date from dual;
+   open c1;
+   loop 
+
+	fetch c1 into l_group_nm, count1;
+   	exit when c1%notfound;	
+
+	state_cd_range 		:= NULL;
+	zip3_range 		:= NULL;	
+	l_city_sql 		:= NULL;
+	l_coty_sql 		:= NULL;
+	total_count 		:= 0;
+	l_seq_num 		:= 0;
+	l_continue 		:= 'Y';
+	l_state_cd 		:= NULL;
+	l_zip3 			:= NULL;
+	l_county_nm 		:= NULL;
+	l_primary_city_nm 	:= NULL;
+	l_zip_code 		:= NULL;
+	l_extra_zip_cds 	:= NULL;
+	l_cov_mod_nm		:= NULL;
+	first_cov_nm_no 	:= 0;
+
+	------STATE CODE cursor start----------   
+	l_sql_stmt := 'select state_cd, count(zip_cd) from zip_code 
+	where state_cd in (select state_cd from zip_code z, 
+			   &2 s where s.zip_cd = z.zip_cd 
+			   and s.group_nm = ''' || l_group_nm || ''') 
+	group by state_cd order by count(zip_cd)';
+	
+	/* fetch only those state codes + number of zip codes in them
+	   corresponding to which a zip code exists in the staged_cm_zip_data_group 
+	   table for the group name being processed and sort them in 
+	   ascending order of number of zipcodes in them.	*/
+	
+	open myCurs for l_sql_stmt;	   
+	loop	   
+
+	     fetch myCurs into l_state_cd, count2;  
+
+	     
+	     /* exit loop when the number of zipcodes left to be processed
+	        is less than the number of zipcodes in the current state. */
+	        
+	     exit when ((count1 - total_count) < count2);	     
+	     exit when myCurs%notfound;
+	     
+	     -- count the number of zipcodes for the current state for the current group.
+	     select count(s.zip_cd) into count3 from zip_code z, &2 s
+	     where s.zip_cd = z.zip_cd and s.group_nm = l_group_nm
+	     and z.state_cd = l_state_cd;	     
+    
+     
+	     -- if both counts are equal, add the state to list to be inserted
+	     if count3 = count2 then	     	     
+		 state_cd_range:= state_cd_range || ',' || l_state_cd;   		 
+		 total_count := total_count + count3;		 
+	         
+	         -- if there are no zipcodes left to be processed set flag and exit loop
+	         if total_count = count1 then	       
+		     l_continue := 'N';		  
+		     exit;		  
+	         end if;
+	     end if;
+	end loop;
+	close myCurs;
+	   	   
+	-- remove comma from start of the state_cd_range string
+	state_cd_range := ltrim(state_cd_range, ',');
+	
+	-- remove space from end of state_cd_range string
+	state_cd_range := rtrim(state_cd_range, ' ');
+	   
+	if state_cd_range IS NOT NULL then
+
+	     -- format sequence number to be used for insertion
+	     l_seq_num := l_seq_num + 1;
+
+	     if l_seq_num < 10 then
+	     	l_seq_num_used := '00' || l_seq_num;
+	     elsif l_seq_num < 100 then
+		l_seq_num_used := '0' || l_seq_num;
+	     else 
+	     	l_seq_num_used := l_seq_num;
+	     end if;
+	
+	     insert into &1
+	     ( group_nm          
+	     , coverage_model_nm 
+	     , rule_ty_cd        
+	     , rule_operator_nm  
+	     , rule_tx           
+	     , sales_dstbn_structure_id
+	     )
+	     values (l_group_nm
+		     , l_group_nm || ' ' || cur_date || ' ' || l_seq_num_used
+		     , 'STAT'
+		     , 'IN'
+		     , state_cd_range
+		     , NULL);
+	end if;
+
+   
+	if state_cd_range IS NULL then
+	    state_cd_sql := NULL;
+	else	    
+	    state_cd_range := REPLACE(state_cd_range,',',''',''');	    
+	    state_cd_range := '''' || state_cd_range || '''';
+	    state_cd_sql := ' and state_cd not in (' || state_cd_range || ')';
+	end if;     
+
+	------STATE CODE cursor end----------   
+
+
+	------ZIP3 cursor start----------   
+
+	-- create partial SQL statement for state codes --> to be used later
+	if l_continue = 'Y' then 	   
+	     l_sql_stmt := 'select ZIP3_NO, count(zip_cd) from zip_code 
+	     where ZIP3_NO is not null ' || state_cd_sql || ' and ZIP3_NO in 
+	          (select z.ZIP3_NO from zip_code z, &2 s 
+	           where s.zip_cd = z.zip_cd and 
+	           s.group_nm = ''' || l_group_nm || ''') 
+	     group by ZIP3_NO order by count(zip_cd)';
+
+
+	     /* fetch only those zip3's corresponding to which a zip 
+	        code exists in the staged_cm_zip_data_group table for the 
+	        group name being processed and which do not belong to the   
+	        states that have already been inserted.	    */
+	     
+	     open myCurs for l_sql_stmt;
+	     
+	     loop     	        
+	          fetch mycurs into l_zip3, count2;	       
+	          exit when ((count1 - total_count) < count2);	          
+	          exit when mycurs%notfound;
+	          	                  
+	          -- count the number of zipcodes for the current zip3 for the current group.	       
+	          l_sql_stmt1 := 'select count(s.zip_cd) from zip_code z, &2 s 
+	                          where s.zip_cd = z.zip_cd and s.group_nm = ''' || l_group_nm || ''' 
+	                          and z.ZIP3_NO = ''' || l_zip3 || '''' || state_cd_sql;	      
+	          
+	          execute immediate l_sql_stmt1 into count3;	       
+
+	          if count3 = count2 then
+	       
+		      zip3_range:= zip3_range || ',' || l_zip3;		
+		      total_count := total_count + count3;	   		
+
+		      if total_count = count1 then		
+		 	   l_continue := 'N';
+		 	   exit;
+		      end if;
+	          end if;
+
+	     end loop;
+	     close myCurs;    	    
+
+	     zip3_range := ltrim(zip3_range,',');	     
+
+	     if zip3_range IS NOT NULL THEN
+	     
+		  l_seq_num := l_seq_num + 1;
+		  
+		  first_cov_nm_no := l_seq_num;
+		  
+		  if l_seq_num < 10 then
+			l_seq_num_used := '00' || l_seq_num;
+		  elsif l_seq_num < 100 then
+			l_seq_num_used := '0' || l_seq_num;
+		  else 
+			l_seq_num_used := l_seq_num;
+		  end if;
+
+		  insert into &1
+		     ( group_nm          
+		     , coverage_model_nm 
+		     , rule_ty_cd        
+		     , rule_operator_nm  
+		     , rule_tx           
+		     , sales_dstbn_structure_id
+		     )
+
+		  values (l_group_nm
+		          , l_group_nm || ' '|| cur_date || ' ' || l_seq_num_used
+		          , 'ZIP3'
+		          , 'IN'
+		          , zip3_range
+		          , NULL);  
+	     end if;
+	        
+
+	end if;
+	
+	-- create partial SQL statement for zip3s --> to be used later
+	if zip3_range IS NULL then
+	     zip3_sql := NULL;
+	else
+	     zip3_range := REPLACE(zip3_range,',',''',''');
+	     zip3_range := '''' || zip3_range || '''';
+	     zip3_sql := ' and zip3_no not in (' || zip3_range || ')';
+	end if;	   
+
+	------ZIP3 cursor end----------
+
+	------COUNTY cursor start----------	
+
+	if l_continue = 'Y' then    
+
+		l_sql_stmt := 'select county_nm, state_cd, count(zip_cd) from zip_code 
+		where county_nm is not null and (county_nm, state_cd) in 
+		(select z.county_nm, z.state_cd from zip_code z, 
+		&2 s where  z.zip_cd = s.zip_cd and 
+		s.group_nm = ''' || l_group_nm || '''' || state_cd_sql || zip3_sql || ') 
+		group by county_nm, state_cd order by count(zip_cd)';
+	     
+
+	     /* fetch only those county's corresponding to which a zip 
+	        code exists in the staged_cm_zip_data_group table for the 
+	        group name being processed and which do not belong to the   
+	        states and zip3's that have already been inserted.    */
+	       
+	     open mycurs for l_sql_stmt;	     	     	   	     
+	     loop
+	          fetch mycurs into l_county_nm, l_state_cd, count2;  	       
+	       
+	       	  exit when ((count1 - total_count) < count2);
+	       	  exit when mycurs%notfound;	
+
+	          if l_county_nm like '%''%' then
+	       	      l_county_nm := REPLACE(l_county_nm, '''', '''''');
+	          end if;       
+
+		  -- count the number of zipcodes for the current county for the current group.
+		  l_sql_stmt1 := 'select count(s.zip_cd) from zip_code z, &2 s 
+		                where s.zip_cd = z.zip_cd and 
+		                s.group_nm = ''' || l_group_nm || ''' 
+		  and z.county_nm = ''' || l_county_nm || ''' and 
+		  z.state_cd = ''' || l_state_cd || '''' || zip3_sql || state_cd_sql;
+   
+	          execute immediate l_sql_stmt1 into count3;
+	       
+		  if count3 = count2 then	       
+
+		      if l_county_nm is not null then	
+			   -- INSERT COUNTY NAME
+
+			   l_seq_num := l_seq_num + 1;
+			   if l_seq_num < 10 then
+				l_seq_num_used := '00' || l_seq_num;
+			   elsif l_seq_num < 100 then
+				l_seq_num_used := '0' || l_seq_num;
+			   else 
+				l_seq_num_used := l_seq_num;
+			   end if;
+			   
+			   insert into &1
+			     ( group_nm          
+			     , coverage_model_nm 
+			     , rule_ty_cd        
+			     , rule_operator_nm  
+			     , rule_tx           
+			     , sales_dstbn_structure_id
+			     )
+			   values (l_group_nm
+				   , l_group_nm || ' '|| cur_date || ' ' || l_seq_num_used
+				   , 'COTY'
+				   , 'IN'
+				   , l_county_nm
+				   , NULL);  			   
+			   
+
+			   -- INSERT STATE CODE FOR THE COUNTY 	   
+
+			   insert into &1
+			     ( group_nm          
+			     , coverage_model_nm 
+			     , rule_ty_cd        
+			     , rule_operator_nm  
+			     , rule_tx           
+			     , sales_dstbn_structure_id
+			     )		   
+			   values (l_group_nm
+				   , l_group_nm || ' '|| cur_date || ' ' || l_seq_num_used
+				   , 'STAT'
+				   , '='
+				   , l_state_cd
+				   , NULL);
+		      end if;
+
+		      total_count := total_count + count3;
+
+		      if total_count = count1 then
+		       	   l_continue := 'N';
+		      	   exit;
+		      end if;
+	          end if;
+	     end loop;
+	     close mycurs;
+
+	end if;
+	
+	CntyCityRollup('COTY', l_group_nm);
+
+
+	select sql_txt,rule_tx,sql_txt1,nxt_rul_tx,sql_txt2 bulk collect 
+	into v_coty_txt1,v_coty_txt2,v_coty_txt3,v_coty_txt4,v_coty_txt5 from(
+	select rule_ty_cd, coverage_model_nm, '(' || decode(rule_ty_cd, 'COTY','COUNTY_NM','STAT','STATE_CD') || ' ' || 
+	decode(rule_operator_nm,'IN','NOT IN (''','<>''') sql_txt, rule_tx, 
+	decode(rule_operator_nm,'IN',''')','''') || ' or ' ||
+	lead(decode(rule_ty_cd, 'COTY','COUNTY_NM','STAT','STATE_CD') || ' ' || 
+	decode(rule_operator_nm,'IN','NOT IN (''','<>''')) over (order by coverage_model_nm) sql_txt1,
+	lead(rule_tx,1,NULL) over (order by coverage_model_nm) nxt_rul_tx,
+	lead(decode(rule_operator_nm,'IN',''')','''') || ')',1,null) over (order by coverage_model_nm) sql_txt2,
+	lead(coverage_model_nm,1,null) over (order by coverage_model_nm) nxt_cov_nm
+	from staged_coverage_model_rule
+	where coverage_model_nm in
+	(select coverage_model_nm from staged_coverage_model_rule where
+	rule_ty_cd = 'COTY') and group_nm = l_group_nm and rule_ty_cd in ('COTY','STAT'))
+	where coverage_model_nm = nxt_cov_nm;
+	
+	FOR i in 1..v_coty_txt1.count LOOP
+		l_coty_sql := l_coty_sql || ' and ' || v_coty_txt1(i) || replace(v_coty_txt2(i),',',''',''') || v_coty_txt3(i) || replace(v_coty_txt4(i),',',''',''') || v_coty_txt5(i);
+	end loop;
+	
+	l_coty_sql := ltrim(l_coty_sql,' and ');
+	
+	-- create partial SQL statement for county's --> to be used later
+	if l_coty_sql IS NULL then
+	     coty_sql := NULL;
+	else
+	     coty_sql := ' and (' || l_coty_sql || ')';
+	end if;
+	
+	------COUNTY cursor end----------
+
+	------CITY cursor start----------   
+
+	
+	if l_continue = 'Y' then         
+	   
+		l_sql_stmt := 'select primary_city_nm, state_cd, count(zip_cd) from zip_code 
+		where primary_city_nm is not null and (primary_city_nm, state_cd) in 
+		(select z.primary_city_nm, z.state_cd from zip_code z, 
+		&2 s where  z.zip_cd = s.zip_cd 
+		and s.group_nm = ''' || l_group_nm || '''' || state_cd_sql 
+		|| zip3_sql || coty_sql || ')
+		group by primary_city_nm, state_cd order by count(zip_cd)';
+
+	     /* fetch only those city's corresponding to which a zip 
+	        code exists in the staged_cm_zip_data_group table for the 
+	        group name being processed and which do not belong to the   
+	        states, zip3's and county's that have already been inserted.
+	     */
+
+	     open mycurs for l_sql_stmt;
+	     
+	     loop
+	          fetch mycurs into l_primary_city_nm, l_state_cd, count2;  
+	       
+	       	  exit when ((count1 - total_count) < count2);
+	          exit when mycurs%notfound;
+	       
+	          if l_primary_city_nm like '%''%' then
+	       	      l_primary_city_nm := REPLACE(l_primary_city_nm, '''', '''''');
+	          end if;
+
+	          -- count the number of zipcodes for the current city for the current group.
+	          l_sql_stmt1 := 'select count(s.zip_cd) from zip_code z, &2 s
+	                        where s.zip_cd = z.zip_cd and 
+	                        s.group_nm = ''' || l_group_nm || '''
+	          and z.primary_city_nm = ''' || l_primary_city_nm || ''' 
+	          and z.state_cd = ''' || l_state_cd || '''' || coty_sql
+	          || zip3_sql || state_cd_sql;
+
+	          execute immediate l_sql_stmt1 into count3;
+
+	          if count3 = count2 then
+
+		      if l_primary_city_nm IS NOT NULL then
+	       
+		       	   -- INSERT CITY NAME
+
+		           l_seq_num := l_seq_num + 1;
+			   if l_seq_num < 10 then
+				l_seq_num_used := '00' || l_seq_num;
+			   elsif l_seq_num < 100 then
+				l_seq_num_used := '0' || l_seq_num;
+			   else 
+				l_seq_num_used := l_seq_num;
+			   end if;	           
+		          
+
+		           insert into &1
+			     ( group_nm          
+			     , coverage_model_nm 
+			     , rule_ty_cd        
+			     , rule_operator_nm  
+			     , rule_tx           
+			     , sales_dstbn_structure_id
+			     )	           
+		           values (l_group_nm
+				   , l_group_nm || ' '|| cur_date || ' ' || l_seq_num_used
+				   , 'CITY'
+				   , 'IN'
+				   , l_primary_city_nm
+				   , NULL);  
+
+		           -- INSERT STATE CODE FOR THE CITY 	   
+
+		           insert into &1
+			     ( group_nm          
+			     , coverage_model_nm 
+			     , rule_ty_cd        
+			     , rule_operator_nm  
+			     , rule_tx           
+			     , sales_dstbn_structure_id
+			     )		           
+		           values (l_group_nm
+				   , l_group_nm || ' '|| cur_date || ' ' || l_seq_num_used
+				   , 'STAT'
+				   , '='
+				   , l_state_cd
+				   , NULL);    						
+		      end if; 
+
+		      total_count := total_count + count3;	   		   
+
+		      if total_count = count1 then	   
+			   l_continue := 'N';
+			   exit;
+		      end if;  
+	          end if;       
+	          
+	     end loop;
+	     close mycurs;     
+
+	end if;
+
+        CntyCityRollup('CITY', l_group_nm);
+
+	select sql_txt,rule_tx,sql_txt1,nxt_rul_tx,sql_txt2 bulk collect 
+	into v_city_txt1,v_city_txt2,v_city_txt3,v_city_txt4,v_city_txt5 from(
+	select rule_ty_cd, coverage_model_nm, '(' || decode(rule_ty_cd, 'CITY','PRIMARY_CITY_NM','STAT','STATE_CD') || ' ' || 
+	decode(rule_operator_nm,'IN','NOT IN (''','<>''') sql_txt, rule_tx, 
+	decode(rule_operator_nm,'IN',''')','''') || ' or ' ||
+	lead(decode(rule_ty_cd, 'CITY','PRIMARY_CITY_NM','STAT','STATE_CD') || ' ' || 
+	decode(rule_operator_nm,'IN','NOT IN (''','<>''')) over (order by coverage_model_nm) sql_txt1,
+	lead(rule_tx,1,NULL) over (order by coverage_model_nm) nxt_rul_tx,
+	lead(decode(rule_operator_nm,'IN',''')','''') || ')',1,null) over (order by coverage_model_nm) sql_txt2,
+	lead(coverage_model_nm,1,null) over (order by coverage_model_nm) nxt_cov_nm
+	from staged_coverage_model_rule
+	where coverage_model_nm in
+	(select coverage_model_nm from staged_coverage_model_rule where
+	rule_ty_cd = 'CITY') and group_nm = l_group_nm and rule_ty_cd in ('CITY','STAT'))
+	where coverage_model_nm = nxt_cov_nm;
+	
+	FOR i in 1..v_city_txt1.count LOOP
+		l_city_sql := l_city_sql || ' and ' || v_city_txt1(i) || replace(v_city_txt2(i),',',''',''') || v_city_txt3(i) || replace(v_city_txt4(i),',',''',''') || v_city_txt5(i);
+	end loop;
+
+	l_city_sql := ltrim(l_city_sql,' and ');   
+	
+       	-- create partial SQL statement for cities --> to be used later
+       	if l_city_sql is null then
+	     city_sql := NULL;
+        else
+	     city_sql := ' and (' || l_city_sql || ')';
+        end if;
+
+
+	------CITY cursor end----------
+
+	l_sql_stmt1 := 'select distinct coverage_model_nm from &1 
+		where GROUP_NM = ''' || l_group_nm || '''
+		and rule_ty_cd not in (''STAT'',''ZIP3'') order by 1';
+		
+	l_seq_num := first_cov_nm_no;
+	
+	open mycurs for l_sql_stmt1;
+	loop
+	fetch mycurs into l_cov_mod_nm;
+		exit when mycurs%notfound;
+		
+		l_seq_num := l_seq_num + 1;
+		
+		if l_seq_num < 10 then
+			l_seq_num_used := '00' || l_seq_num;
+		elsif l_seq_num < 100 then
+			l_seq_num_used := '0' || l_seq_num;
+		else 
+			l_seq_num_used := l_seq_num;
+		end if;
+
+		update &1 set coverage_model_nm = l_group_nm || ' '|| cur_date || ' ' || l_seq_num_used
+		where coverage_model_nm = l_cov_mod_nm;
+	end loop;
+	close mycurs;
+
+
+	------Cursor for the rest of the zip codes start----------   
+
+        if l_continue = 'Y' then
+
+	     l_sql_stmt := 'select distinct zip_cd from &2 s 
+	     where s.group_nm = ''' || l_group_nm || ''' and exists 
+	     	  (select 1 from zip_code z where s.zip_cd = z.zip_cd' || city_sql || coty_sql 
+	     	   || zip3_sql || state_cd_sql || ')';		
+
+	     /* fetch all those zipcodes that do not belong to the states, 
+	        zip3's, county's and city's that have already been inserted.
+	     */
+
+             open myCurs for l_sql_stmt;
+	     loop
+		  fetch myCurs into l_zip_code;
+		  exit when myCurs%NOTFOUND;
+
+		  l_extra_zip_cds := l_extra_zip_cds || ',' || l_zip_code;
+		  if length(l_extra_zip_cds) + 6 >= 4000 then
+		     l_extra_zip_cds := ltrim(l_extra_zip_cds,',');
+
+			  -- INSERT THE ZIP CODES 	   
+
+			  l_seq_num := l_seq_num + 1;
+			  if l_seq_num < 10 then
+				l_seq_num_used := '00' || l_seq_num;
+			  elsif l_seq_num < 100 then
+				l_seq_num_used := '0' || l_seq_num;
+			  else 
+				l_seq_num_used := l_seq_num;
+			  end if;
+
+
+			  insert into &1
+			     ( group_nm          
+			     , coverage_model_nm 
+			     , rule_ty_cd        
+			     , rule_operator_nm  
+			     , rule_tx           
+			     , sales_dstbn_structure_id
+			     )	  
+			  values (l_group_nm
+				  , l_group_nm || ' '|| cur_date || ' ' || l_seq_num_used
+				  , 'ZIP'
+				  , 'IN'
+				  , l_extra_zip_cds
+				  , NULL);		
+		          l_extra_zip_cds := null;
+		  end if;
+	     end loop;
+	     close myCurs;   
+
+	     l_extra_zip_cds := ltrim(l_extra_zip_cds,',');
+	     
+	     if l_extra_zip_cds is not null then
+
+		  -- INSERT THE ZIP CODES 	   
+
+		  l_seq_num := l_seq_num + 1;
+		  if l_seq_num < 10 then
+			l_seq_num_used := '00' || l_seq_num;
+		  elsif l_seq_num < 100 then
+			l_seq_num_used := '0' || l_seq_num;
+		  else 
+			l_seq_num_used := l_seq_num;
+		  end if;
+
+
+		  insert into &1
+		     ( group_nm          
+		     , coverage_model_nm 
+		     , rule_ty_cd        
+		     , rule_operator_nm  
+		     , rule_tx           
+		     , sales_dstbn_structure_id
+		     )	  
+		  values (l_group_nm
+			  , l_group_nm || ' '|| cur_date || ' ' || l_seq_num_used
+			  , 'ZIP'
+			  , 'IN'
+			  , l_extra_zip_cds
+			  , NULL);
+
+
+	     end if;
+
+	end if;	         
+
+	------Cursor for the rest of the zip codes end----------   
+    end loop;
+    close c1;
+
+----------Main cursor of ZIP GROUP NAME end----------
+
+commit;
+
+select count(*) into count1 from staged_coverage_model_rule;
+dbms_output.put_line ('Inserted ' || count1 || ' rows in &1');
+
+dbms_output.put_line('Finished roll up for zip data at :  '|| to_char(sysdate,'DD-MON-RR HH24.MI.SS'));
+
+dbms_output.put_line ('stagedCoverageModelRuleForZip SQL executed succesfully');  	
+
+
+EXCEPTION
+	when others then
+		dbms_output.put_line ('exception' || sqlerrm);  
+		dbms_output.put_line('Error in roll up for zip data occurred at :  '|| to_char(sysdate,'DD-MON-RR HH24.MI.SS'));
+		rollback;
+		raise;
+end;
+/
+
+exit
+
