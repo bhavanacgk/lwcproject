@@ -1,0 +1,119 @@
+whenever oserror exit SQL.OSCODE
+whenever sqlerror exit SQL.SQLCODE
+set serveroutput on size 1000000;
+spool &5;
+set timing on;
+set verify off;
+
+-- input argument staged_coverage_model_rule coverage_model coverage_model_rule sds_coverage_model table name
+declare
+
+	count_b		number;
+	count_a		number;
+	count_i		number;
+
+begin
+
+	dbms_output.put_line('Starting insertion of rollup data at :  '|| to_char(sysdate,'DD-MON-RR HH24.MI.SS'));
+	
+	
+	select count(*) into count_b from &2;
+
+	insert into &2
+	(
+	 coverage_model_id, 
+	 coverage_model_nm,
+	 last_update_dt,
+	 last_update_by_id,
+	 sys_tm_stmp,
+	 sys_usr_stmp,
+	 lock_id
+	) select
+	 coverage_model_seq.nextval,
+	 coverage_model_nm,
+	 sysdate,
+	 'batch_load',
+	 sysdate,
+	 'batch_load',
+	 1
+	 from (select distinct coverage_model_nm from &1);
+	 
+	 select count(*) into count_a from &2;
+	 count_i := count_a - count_b;
+	 dbms_output.put_line('Inserted ' || count_i || ' rows in &2');
+	 
+	 
+	 select count(*) into count_b from &3;
+	  
+	 insert into &3
+	 (
+	  coverage_model_rule_id, 
+	  coverage_model_id, 
+	  rule_ty_cd, 
+	  rule_operator_nm, 
+	  coverage_model_rule_tx, 
+	  last_update_dt, 
+	  last_update_by_id, 
+	  sys_tm_stmp, 
+	  sys_usr_stmp, 
+	  lock_id
+	 ) select
+	  coverage_model_rule_seq.nextval,
+	  c.coverage_model_id,
+	  s.rule_ty_cd,
+	  s.rule_operator_nm,
+	  s.rule_tx,
+	  sysdate, 
+	  'batch_load', 
+	  sysdate, 
+	  'batch_load', 
+	  1
+	 from &1 s, &2 c
+	    where c.coverage_model_nm=s.coverage_model_nm;
+	    
+	select count(*) into count_a from &3;
+	count_i := count_a - count_b;
+	dbms_output.put_line('Inserted ' || count_i || ' rows in &3');
+	
+	
+	select count(*) into count_b from &4;	
+	
+	insert into &4 
+	(
+	 sales_dstbn_structure_id,
+	 coverage_model_id,
+	 last_update_dt,
+	 last_update_by_id,
+	 sys_tm_stmp,
+	 sys_usr_stmp,
+	 lock_id
+	)select
+	 sales_dstbn_structure_id, 
+	 coverage_model_id,
+	 sysdate, 
+	 'batch_load', 
+	 sysdate, 
+	 'batch_load', 
+	 1
+	from (select distinct s.sales_dstbn_structure_id, c.coverage_model_id from &1 s, &2 c
+	where s.sales_dstbn_structure_id is not null and c.coverage_model_nm=s.coverage_model_nm);
+	
+	select count(*) into count_a from &4;
+	count_i := count_a - count_b;
+	dbms_output.put_line('Inserted ' || count_i || ' rows in &4');
+	
+	commit;
+	dbms_output.put_line('Finished insertion of rollup data at :  '|| to_char(sysdate,'DD-MON-RR HH24.MI.SS'));
+	
+exception
+   when others then   	
+   	rollback;
+	dbms_output.put_line ('terrMapRollup SQL Exception' );
+	dbms_output.put_line('in insertion of rollup data occurred at :  '|| to_char(sysdate,'DD-MON-RR HH24.MI.SS'));
+        raise;	
+
+end; 
+/
+spool off;
+exit;
+ 
